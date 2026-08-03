@@ -119,3 +119,32 @@ func FuzzFieldCall(f *testing.F) {
 		_ = v.check(b)
 	})
 }
+
+// Fuzz is exactly "Fuzz" — the go rule accepts the empty rest, so this IS a
+// target and its assertion-free callback is judged.
+func Fuzz(f *testing.F) {
+	f.Fuzz(func(t *testing.T, b []byte) { // want `invokes without asserting`
+		_, _ = Parse(b)
+	})
+}
+
+// FuzzyDriver fails the go name rule (lowercase rune after "Fuzz") even in a
+// _test.go file: a helper, not a target, so its callback goes unjudged.
+func FuzzyDriver(f *testing.F) {
+	f.Fuzz(func(t *testing.T, b []byte) {
+		_, _ = Parse(b)
+	})
+}
+
+// FuzzEngineInside is a REAL target: its f.Fuzz callback asserts, and the
+// engine.Fuzz call inside is a domain method on a custom type, not the
+// fuzzer — it must not be judged as a fuzz entry point.
+func FuzzEngineInside(f *testing.F) {
+	e := Engine{rounds: 1}
+	e.Fuzz(func() {})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if decoded, err := Parse(b); err == nil && string(Render(decoded)) != string(b) {
+			t.Fatalf("round-trip mismatch for %q", b)
+		}
+	})
+}

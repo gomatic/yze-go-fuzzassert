@@ -13,12 +13,21 @@
 // judge the helper across call boundaries. t.Skip and t.Log fail nothing and
 // therefore assert nothing. A callback passed by NAME is resolved when it is
 // declared in the same package; an unresolvable reference fails open.
+//
+// A fuzz target is what the go tool itself would run, nothing looser: a free
+// function in a _test.go file, named "Fuzz" followed by a non-lowercase rune
+// (or nothing at all), taking exactly one *testing.F parameter — and only a
+// Fuzz call made ON that *testing.F is judged. Production code that merely
+// resembles fuzzing (a FuzzDrive free function, an engine.Fuzz method on a
+// custom type, a Fuzzy-prefixed name) is invisible to this analyzer.
 package fuzzassert
 
 import (
 	"go/ast"
 	"go/types"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	goyze "github.com/gomatic/go-yze"
 	"golang.org/x/tools/go/analysis"
@@ -59,33 +68,79 @@ func run(pass *analysis.Pass) (any, error) {
 	ins, _ := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	ins.Preorder([]ast.Node{(*ast.FuncDecl)(nil)}, func(n ast.Node) {
 		decl, _ := n.(*ast.FuncDecl)
-		if isFuzzTarget(decl) {
+		if isFuzzTarget(pass, decl) {
 			checkTarget(pass, decl)
 		}
 	})
 	return nil, nil
 }
 
-// isFuzzTarget reports a top-level Fuzz* function.
-func isFuzzTarget(decl *ast.FuncDecl) bool {
-	return decl.Recv == nil && strings.HasPrefix(decl.Name.Name, "Fuzz") && decl.Body != nil
+// isFuzzTarget reports what the go tool would run as a fuzz target: a free
+// function named per the go rule, taking exactly one *testing.F parameter,
+// declared in a _test.go file.
+func isFuzzTarget(pass *analysis.Pass, decl *ast.FuncDecl) bool {
+	return decl.Recv == nil && decl.Body != nil &&
+		isFuzzName(funcName(decl.Name.Name)) &&
+		takesTestingF(pass, decl) &&
+		inTestFile(pass, decl)
+}
+
+// inTestFile reports a declaration located in a _test.go file.
+func inTestFile(pass *analysis.Pass, decl *ast.FuncDecl) bool {
+	return strings.HasSuffix(pass.Fset.Position(decl.Pos()).Filename, "_test.go")
+}
+
+// funcName is the identifier of a declared function.
+type funcName string
+
+// isFuzzName applies the go tool's rule for fuzz identifiers: "Fuzz" followed
+// by a non-lowercase rune, or exactly "Fuzz" — so FuzzyMatch is an ordinary
+// function, not a target.
+func isFuzzName(name funcName) bool {
+	rest, ok := strings.CutPrefix(string(name), "Fuzz")
+	if !ok {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	return rest == "" || !unicode.IsLower(r)
+}
+
+// takesTestingF reports a signature of exactly one *testing.F parameter.
+func takesTestingF(pass *analysis.Pass, decl *ast.FuncDecl) bool {
+	params := decl.Type.Params.List
+	if len(params) != 1 || len(params[0].Names) > 1 {
+		return false
+	}
+	return isTestingF(pass.TypesInfo.TypeOf(params[0].Type))
+}
+
+// isTestingF reports the type *testing.F exactly.
+func isTestingF(t types.Type) bool {
+	ptr, ok := types.Unalias(t).(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := types.Unalias(ptr.Elem()).(*types.Named)
+	return ok && named.Obj().Pkg() != nil &&
+		named.Obj().Pkg().Path() == "testing" && named.Obj().Name() == "F"
 }
 
 // checkTarget reports each f.Fuzz callback in the target that asserts nothing.
 func checkTarget(pass *analysis.Pass, decl *ast.FuncDecl) {
 	ast.Inspect(decl.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if ok && isFuzzCall(call) && len(call.Args) == 1 {
+		if ok && isFuzzCall(pass, call) && len(call.Args) == 1 {
 			checkCallback(pass, call, call.Args[0])
 		}
 		return true
 	})
 }
 
-// isFuzzCall reports a <fuzzer>.Fuzz(...) call.
-func isFuzzCall(call *ast.CallExpr) bool {
+// isFuzzCall reports a Fuzz(...) call made on a *testing.F — a Fuzz method
+// on any other type is somebody's domain verb, not the fuzzer.
+func isFuzzCall(pass *analysis.Pass, call *ast.CallExpr) bool {
 	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	return ok && sel.Sel.Name == "Fuzz"
+	return ok && sel.Sel.Name == "Fuzz" && isTestingF(pass.TypesInfo.TypeOf(sel.X))
 }
 
 // checkCallback resolves the callback expression to a body and judges it. An
