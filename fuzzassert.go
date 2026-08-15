@@ -86,8 +86,14 @@ func isFuzzTarget(pass *analysis.Pass, decl *ast.FuncDecl) bool {
 }
 
 // inTestFile reports a declaration located in a _test.go file.
+//
+// The name comes from the FileSet's own entry, never from a Position: Position
+// applies //line directives, so a declaration could rename itself out of "what
+// the go tool would run" with one comment line while `go test -fuzz` went on
+// running it. A decision ABOUT a file must read something that file cannot
+// rewrite.
 func inTestFile(pass *analysis.Pass, decl *ast.FuncDecl) bool {
-	return strings.HasSuffix(pass.Fset.Position(decl.Pos()).Filename, "_test.go")
+	return strings.HasSuffix(pass.Fset.File(decl.Pos()).Name(), "_test.go")
 }
 
 // funcName is the identifier of a declared function.

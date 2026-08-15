@@ -136,3 +136,32 @@ func TestIsFuzzTargetRequiresATestFileDeclaration(t *testing.T) {
 	bodiless.Body = nil
 	assert.False(t, isFuzzTarget(pass, bodiless), "no body")
 }
+
+// TestInTestFileReadsTheNameTheFileCannotRewrite pins the "what the go tool would run" test to the FileSet's own
+// entry for a file. A //line directive compiles to exactly the
+// AddLineColumnInfo calls made here: fset.Position reads that alternative
+// information and token.File.Name() ignores it, so the disagreement below is
+// the one a directive produces, built directly rather than parsed.
+//
+// Both directions are asserted because reading the rewritten name is wrong in
+// both: it drops a target `go test -fuzz` really does run, and claims one it never would.
+func TestInTestFileReadsTheNameTheFileCannotRewrite(t *testing.T) {
+	t.Parallel()
+
+	fset := token.NewFileSet()
+	shipped := fset.AddFile("shipped.go", -1, 100)
+	shipped.AddLineColumnInfo(0, "zz_test.go", 1, 1)
+	tested := fset.AddFile("shipped_test.go", -1, 100)
+	tested.AddLineColumnInfo(0, "nottest.go", 1, 1)
+	pass := &analysis.Pass{Fset: fset}
+
+	assert.Equal(t, "zz_test.go", fset.Position(shipped.Pos(1)).Filename,
+		"the position machinery does adopt the claimed name — without this the rest asserts nothing")
+	assert.Equal(t, "nottest.go", fset.Position(tested.Pos(1)).Filename,
+		"and in the other direction too")
+
+	assert.False(t, inTestFile(pass, declOf("Fuzz", shipped.Pos(1))),
+		"compiled source claiming a test name holds no fuzz target")
+	assert.True(t, inTestFile(pass, declOf("Fuzz", tested.Pos(1))),
+		"a test file claiming a source name still holds one")
+}
