@@ -34,6 +34,16 @@ func TestRegistrationIsWellFormed(t *testing.T) {
 // Package forgeline's real fuzz target claims a source name and is judged
 // anyway; the Fuzz-shaped function in its ordinary source claims a test name and
 // is still invisible, because the go tool would never fuzz it.
+//
+// The rest of the package sits on the matcher's literal, because the identity
+// is only as good as the comparison that reads it and every widening below
+// survived this suite before its fixture existed. FuzzKit's file name contains
+// "_test" and does not end in "_test.go"; FuzzHelper's ends in "test.go" with
+// no underscore — the left edge, and the shape of net/http/httptest/httptest.go;
+// FuzzGolden's contains "_test.go" without ending in it; FuzzCased's differs
+// from "_test.go" only in letter case. All four are in GoFiles, so `go test
+// -fuzz` would run none of them and none is reported, and each kills one
+// widening that would manufacture a false positive on production source.
 func TestADirectiveDoesNotRenameAFile(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), fuzzassert.Analyzer, "forgeline")
 }
